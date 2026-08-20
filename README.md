@@ -10,6 +10,9 @@ Montanari, Deanna Hooper, Samuel Brieden, Daniel Meinert, Matteo Lucca, etc.
 For download and information, see http://class-code.net
 
 
+This is a modified version of their code- see this paper [link tba] for details on how this code is effective in treating anisotropisation of neutrinos and scattering.
+
+
 Compiling CLASS and getting started
 -----------------------------------
 
