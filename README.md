@@ -27,7 +27,7 @@ the download button)
 
 Download the code from the webpage and unpack the archive (tar -zxvf
 class_vx.y.z.tar.gz), or clone it from
-https://github.com/lesgourg/class_public. Go to the class directory
+https://github.com/mojo3112/class_NuDecayScattering. Go to the class directory
 (cd class/ or class_public/ or class_vx.y.z/) and compile (make clean;
 make class). You can usually speed up compilation with the option -j:
 make -j class. If the first compilation attempt fails, you may need to
