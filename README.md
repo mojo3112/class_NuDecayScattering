@@ -1,11 +1,17 @@
-CLASS: Cosmic Linear Anisotropy Solving System  {#mainpage}
+CLASS: Cosmic Linear Anisotropy Solving System- Modified version
 ==============================================
 
-Authors: Julien Lesgourgues, Thomas Tram, Nils Schoeneberg
+Authors for classy: Julien Lesgourgues, Thomas Tram, Nils Schoeneberg
+
 
 with several major inputs from other people, especially Benjamin
 Audren, Simon Prunet, Jesus Torrado, Miguel Zumalacarregui, Francesco
 Montanari, Deanna Hooper, Samuel Brieden, Daniel Meinert, Matteo Lucca, etc.
+
+
+Decay Modifications: Giovanni Pierobon
+Scattering Modifications: Amrita Mukherjee, Jahanvi Maheshwari
+
 
 For download and information, see http://class-code.net
 
@@ -99,7 +105,7 @@ Developing the code
 If you want to develop the code, we suggest that you download it from
 the github webpage
 
-https://github.com/lesgourg/class_public
+https://github.com/mojo3112/class_NuDecayScattering
 
 rather than from class-code.net. Then you will enjoy all the feature
 of git repositories. You can even develop your own branch and get it
