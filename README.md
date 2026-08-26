@@ -46,7 +46,7 @@ incompatibility with OpenMP).
 
 To check that the code runs, type:
 
-    ./class explanatory.ini
+    ./class ScattDecay_newmods.ini
 
 The explanatory.ini file is THE reference input file, containing and
 explaining the use of all possible input parameters. We recommend to
