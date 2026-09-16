@@ -41,6 +41,76 @@ static double evaluate_fitted_rate(double log_a, double m, double g, double conv
     return exp(num/den)* pow(g, 4.0) * conv_fact;
 }
 /*End NEW mods*/
+/* NEW: read the numerical total scattering rate table F(a,m) (evaluated at g=1) from a
+   two-column ASCII file: log_a  ln(F). Called once from perturbations_init() when
+   ppt->use_scattering_rate_file == _TRUE_. Builds the natural-cubic-spline second-derivative
+   array needed by array_interpolate_spline() at each perturbations_derivs() call. */
+static int perturbations_read_scattering_rate_table(struct perturbations * ppt) {
+
+  FILE * fA;
+  char line[_LINE_LENGTH_MAX_];
+  double this_log_a, this_lnF;
+  int row;
+
+  class_open(fA, ppt->scattering_rate_file, "r", ppt->error_message);
+
+  /* first pass: count usable data rows (skip blank lines and '#' comments) */
+  ppt->rt_size = 0;
+  while (fgets(line, _LINE_LENGTH_MAX_, fA) != NULL) {
+    if (line[0] == '#' || line[0] == '\n' || line[0] == '\0' || line[0] == '\r')
+      continue;
+    ppt->rt_size++;
+  }
+
+  class_test(ppt->rt_size < 2,
+             ppt->error_message,
+             "nu_scattering_rate_file '%s' contains fewer than 2 usable data rows",
+             ppt->scattering_rate_file);
+
+  rewind(fA);
+
+  class_alloc(ppt->rt_log_a, ppt->rt_size*sizeof(double), ppt->error_message);
+  class_alloc(ppt->rt_lnF,   ppt->rt_size*sizeof(double), ppt->error_message);
+
+  /* second pass: fill the arrays */
+  row = 0;
+  while (fgets(line, _LINE_LENGTH_MAX_, fA) != NULL) {
+    if (line[0] == '#' || line[0] == '\n' || line[0] == '\0' || line[0] == '\r')
+      continue;
+    class_test(sscanf(line, "%lg %lg", &this_log_a, &this_lnF) != 2,
+               ppt->error_message,
+               "could not read two columns (log_a, lnF) from a data line of '%s'",
+               ppt->scattering_rate_file);
+    ppt->rt_log_a[row] = this_log_a;
+    ppt->rt_lnF[row]   = this_lnF;
+    row++;
+  }
+
+  fclose(fA);
+
+  /* require a strictly increasing log_a grid, as needed by the spline/hunt search */
+  for (row = 1; row < ppt->rt_size; row++) {
+    class_test(ppt->rt_log_a[row] <= ppt->rt_log_a[row-1],
+               ppt->error_message,
+               "nu_scattering_rate_file '%s' must have log_a strictly increasing (violated at row %d)",
+               ppt->scattering_rate_file, row);
+  }
+
+  class_alloc(ppt->ddrt_lnF, ppt->rt_size*sizeof(double), ppt->error_message);
+
+  class_call(array_spline_table_lines(ppt->rt_log_a,
+                                       ppt->rt_size,
+                                       ppt->rt_lnF,
+                                       1,
+                                       ppt->ddrt_lnF,
+                                       _SPLINE_NATURAL_,
+                                       ppt->error_message),
+             ppt->error_message,
+             ppt->error_message);
+
+  return _SUCCESS_;
+}
+/* END NEW */
 
 /**
  * Source function \f$ S^{X} (k, \tau) \f$ at a given conformal time tau.
@@ -736,7 +806,14 @@ int perturbations_init(
     if (ppt->perturbations_verbose > 0)
       printf("Computing sources\n");
   }
-
+    /* NEW: one-time read + spline of the numerical total scattering rate table, if requested.
+     Must happen exactly once here, NOT inside perturbations_derivs() (called an enormous
+     number of times per run) -- derivs() only ever does a cheap spline lookup afterwards. */
+  if (ppt->use_scattering_rate_file == _TRUE_) {
+    class_call(perturbations_read_scattering_rate_table(ppt),
+               ppt->error_message,
+               ppt->error_message);
+  }
   class_test((ppt->gauge == synchronous) && (pba->has_cdm == _FALSE_),
              ppt->error_message,
              "In the synchronous gauge, it is not self-consistent to assume no CDM: the later is used to define the initial timelike hypersurface. You can either add a negligible amount of CDM, or switch to newtonian gauge");
@@ -1091,7 +1168,14 @@ int perturbations_free(
     free(ppt->sources);
     free(ppt->late_sources);
     free(ppt->ddlate_sources);
-
+	  
+    /* NEW: free the numerical scattering-rate table, if one was read */
+    if (ppt->rt_log_a != NULL)
+      free(ppt->rt_log_a);
+    if (ppt->rt_lnF != NULL)
+      free(ppt->rt_lnF);
+    if (ppt->ddrt_lnF != NULL)
+      free(ppt->ddrt_lnF);
     /** Stuff related to perturbations output: */
 
     /** - Free non-NULL pointers */
@@ -2978,6 +3062,7 @@ int perturbations_solve(
   /** - initialize indices relevant for back/thermo tables search */
   ppw->last_index_back=0;
   ppw->last_index_thermo=0;
+  ppw->last_index_rate=0; /* NEW: hunt index for the numerical scattering-rate table */
   ppw->inter_mode = inter_normal;
 
   /** - get wavenumber value */
@@ -3175,6 +3260,7 @@ int perturbations_solve(
   ppaw.ppw->inter_mode = inter_closeby;
   ppaw.ppw->last_index_back = 0;
   ppaw.ppw->last_index_thermo = 0;
+  ppaw.ppw->last_index_rate = 0; /* NEW: log_a resets to the start of the integration for this k */
 
   /** - check whether we need to print perturbations to a file for this wavenumber */
 
@@ -9455,59 +9541,90 @@ int perturbations_derivs(double tau,
 
         Phi = (1.0/3.0)*(ppt->delmsq/(m*m))*(ppt->delmsq/(m*m));
         k_fit = (6.55*pow(10,10));
-        rho_nu_by_rho_total = 1.0/3.0;
         Mterm = m-sqrt((m*m-ppt->delmsq));
         Mratio= pow((m/0.05),5.0);
         g = sqrt((YineV*4.0*_PI_*pow(m,3.0))/(k_fit*Phi*Mratio*ppt->delmsq*Mterm*Mterm));
-        rho_phi_by_rho_total = 0.1;
         log_a = log(a);
 
-        //printf("-> DERIVED RUNTIME COUPLING g = %e\n", g);
+		if (ppt->use_scattering_rate_file == _TRUE_) {
 
-        /* Scattering rates structure and evaluate_fitted_rate() defined at file scope above */
+          /* NEW: numerical total rate F(a,m) tabulated at g=1 -- interpolate ln F at this
+             log_a (spline built once in perturbations_init()), then rescale by the
+             runtime-derived g^4. conv_fact is NOT applied here: it must already be baked
+             into the table values by whatever generated the file, since conv_fact was a
+             unit-conversion factor for the fit's output units, not a free parameter. */
+          double lnF;
 
-        // 1. nu nu -> phi phi
-        coef_ann = (struct rate_fit_coefs){
-            -19.7001,  -251.163,  -2050.69,
-            -2.49392,  -20.9586,  -242.353,
-            -0.0119565, -0.680948, -10.6512
-             };
+          class_call(array_interpolate_spline(ppt->rt_log_a,
+                                               ppt->rt_size,
+                                               ppt->rt_lnF,
+                                               ppt->ddrt_lnF,
+                                               1,
+                                               log_a,
+                                               &(ppw->last_index_rate),
+                                               &lnF,
+                                               1,
+                                               error_message),
+                     error_message,
+                     error_message);
 
-        // 2. nu phi -> nu phi
-        coef_scat = (struct rate_fit_coefs){
-           -13.8885,   -115.423,   252.341,
-           -1.18868,   -9.26025,   19.652,
-           -0.00703318, -0.799879,  1.64671
-         };
+          scat_tot = pow(g, 4.0) * exp(lnF);
 
-        // 3. nu nu -> nu nu
-        coef_self = (struct rate_fit_coefs){
-           -26.8621,   1592.73,   -31466.1,
-           -2.45947,   147.611,   -2918.71,
-          -0.163982,  16.6932,   -327.31
-        };
+        }
+        else {
 
-        // 4. phi phi -> nu nu
-        coef_crea = (struct rate_fit_coefs){
-            -11.0051,   -149.76,   -616.629,
-            -0.953463,  -13.3998,  -53.8555,
-             0.00539572, -1.47096,  -5.40875
-        };
+          /* Legacy fallback: fitted rate_fit_coefs polynomial, unchanged. */
 
-        // Evaluate individual channel rates
-        Gamma_nunu_to_phiphi = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_ann);
-        Gamma_nuphi_to_nuphi = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_scat);
-        Gamma_nunu_to_nunu   = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_self);
-        Gamma_phiphi_to_nunu = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_crea);
+          rho_nu_by_rho_total = 1.0/3.0;
+          rho_phi_by_rho_total = 0.1;
 
-        /* Map them to target-specific rates based on definitions */
-        Gamma_nu_nu   = Gamma_nunu_to_nunu;
-        Gamma_nu_phi  = Gamma_nuphi_to_nuphi; /* Rate per neutrino scattering off phi */
-        Gamma_phi_nu  = Gamma_nuphi_to_nuphi; /* Rate per scalar scattering off nu */
-        Gamma_ann     = Gamma_nunu_to_phiphi;
-        Gamma_crea    = Gamma_phiphi_to_nunu;
-        scat_tot = rho_nu_by_rho_total*2*Gamma_nu_nu + rho_nu_by_rho_total*1*Gamma_nu_phi + rho_phi_by_rho_total*2*Gamma_phi_nu + rho_nu_by_rho_total*2*Gamma_ann + rho_phi_by_rho_total*1*Gamma_crea;
+          /* Scattering rates structure and evaluate_fitted_rate() defined at file scope above */
+
+          // 1. nu nu -> phi phi
+          coef_ann = (struct rate_fit_coefs){
+              -19.7001,  -251.163,  -2050.69,
+              -2.49392,  -20.9586,  -242.353,
+              -0.0119565, -0.680948, -10.6512
+               };
+
+          // 2. nu phi -> nu phi
+          coef_scat = (struct rate_fit_coefs){
+             -13.8885,   -115.423,   252.341,
+             -1.18868,   -9.26025,   19.652,
+             -0.00703318, -0.799879,  1.64671
+           };
+
+          // 3. nu nu -> nu nu
+          coef_self = (struct rate_fit_coefs){
+             -26.8621,   1592.73,   -31466.1,
+             -2.45947,   147.611,   -2918.71,
+            -0.163982,  16.6932,   -327.31
+          };
+
+          // 4. phi phi -> nu nu
+          coef_crea = (struct rate_fit_coefs){
+              -11.0051,   -149.76,   -616.629,
+              -0.953463,  -13.3998,  -53.8555,
+               0.00539572, -1.47096,  -5.40875
+          };
+
+          // Evaluate individual channel rates
+          Gamma_nunu_to_phiphi = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_ann);
+          Gamma_nuphi_to_nuphi = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_scat);
+          Gamma_nunu_to_nunu   = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_self);
+          Gamma_phiphi_to_nunu = evaluate_fitted_rate(log_a, m, g, conv_fact, coef_crea);
+
+          /* Map them to target-specific rates based on definitions */
+          Gamma_nu_nu   = Gamma_nunu_to_nunu;
+          Gamma_nu_phi  = Gamma_nuphi_to_nuphi; /* Rate per neutrino scattering off phi */
+          Gamma_phi_nu  = Gamma_nuphi_to_nuphi; /* Rate per scalar scattering off nu */
+          Gamma_ann     = Gamma_nunu_to_phiphi;
+          Gamma_crea    = Gamma_phiphi_to_nunu;
+          scat_tot = rho_nu_by_rho_total*2*Gamma_nu_nu + rho_nu_by_rho_total*1*Gamma_nu_phi + rho_phi_by_rho_total*2*Gamma_phi_nu + rho_nu_by_rho_total*2*Gamma_ann + rho_phi_by_rho_total*1*Gamma_crea;
+        }
       }
+
+
 
       /* NEW: curlyF only evaluated if the decay channel is switched on. This formula itself
          was already safe at capX=0 (falls into the else branch below), but gating it here
@@ -9559,18 +9676,7 @@ int perturbations_derivs(double tau,
              "off" state never depends on capY's numeric value either. */
           conformal_scat = a * scat_tot;
           decay_damp     = (ppt->has_nu_decay == _TRUE_) ? pow(a,6)*capY*curlyF : 0.;
-         {
- static FILE *rate_log = NULL;
-  if (rate_log == NULL) rate_log = fopen("rate_log.dat", "w");
-  if (rate_log != NULL) {
-    /* NEW: guard against division by zero -- decay_damp/conformal_scat is only
-       meaningful when scattering is actually on; otherwise log NaN/0 sentinel
-       instead of letting the ratio blow up to inf. */
-    double ratio = (conformal_scat != 0.) ? decay_damp/conformal_scat : 0.;
-    fprintf(rate_log, "%e %e %e %e\n", a, decay_damp, conformal_scat, ratio);
-  }
-}
-          /** - -----> exact ur shear */
+                   /** - -----> exact ur shear */
           dy[pv->index_pt_shear_ur] =
             0.5*(
                  // standard term
