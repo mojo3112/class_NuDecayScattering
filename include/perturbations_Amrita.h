@@ -178,6 +178,19 @@ struct perturbations
   int has_nu_decay; //.ini switch to turn on/off decay
   int has_nu_scattering; //.ini switch to turn on/off scattering
   double delmsq; //mass-squared splitting (eV^2)
+
+  /* NEW: numerical total scattering rate F(a,m), tabulated at g=1, read from a data file.
+     g itself is NOT read from the .ini -- it continues to be derived at runtime from
+     capY, capX and delmsq exactly as before (see perturbations_derivs() in perturbations.c);
+     this table only replaces the four fitted rate_fit_coefs channel formulas with a single
+     numerical total-rate lookup, multiplied by the runtime-derived g^4 at the call site. */
+  int use_scattering_rate_file; //.ini switch: read F(a,m) from file instead of using the fitted coefficients?
+  FileName scattering_rate_file; // path to the two-column (log_a, ln F) table, F evaluated at g=1 for this run's m
+
+  int rt_size;        // number of rows read from scattering_rate_file
+  double * rt_log_a;  // tabulated log(a) grid (strictly increasing)
+  double * rt_lnF;    // tabulated ln[F(a,m)] on that grid
+  double * ddrt_lnF;  // spline second-derivative array for rt_lnF (from array_spline_table_lines)
   
 
   double z_max_pk; /**< when we compute only the matter spectrum / transfer functions, but not the CMB, we are sometimes interested to sample source functions at very high redshift, way before recombination. This z_max_pk will then fix the initial sampling time of the sources. */
@@ -630,6 +643,8 @@ struct perturbations_workspace
 
   int last_index_back;   /**< the background interpolation function background_at_tau() keeps memory of the last point called through this index */
   int last_index_thermo; /**< the thermodynamics interpolation function thermodynamics_at_z() keeps memory of the last point called through this index */
+  int last_index_rate;   /**< NEW: array_interpolate_spline() keeps memory of the last point called through this index, for the numerical scattering-rate table lookup in perturbations_derivs() */
+
 
   //@}
 
