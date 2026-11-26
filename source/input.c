@@ -2531,7 +2531,7 @@ int input_read_parameters_species(struct file_content * pfc,
                errmsg,
                "If you specify the mother neutrino mass (capX) you should also specify the neutrino decay rate (X function).");   
   
-  printf("Assuming relativistic neutrino decay with capY=%g Mpc and capX=%g \n", ppt->capY, ppt->capX);  
+  // printf("Assuming relativistic neutrino decay with capY=%g Mpc and capX=%g \n", ppt->capY, ppt->capX);  
 
     //NEW: independent on/off switches for decay and scattering damping terms
     // Set explicity with nu_decay and nu_scattering params in the .ini/.yaml files
@@ -2577,11 +2577,63 @@ int input_read_parameters_species(struct file_content * pfc,
             errmsg,
             "delmsq must be strictly positive (it is mass-squared term [eV^2]).");
     }
-    printf("-> Neutrino decay channel %s | scattering channel: %s | delmsq = %g eV^2\n",
-        (ppt->has_nu_decay == _TRUE_) ? "ON" : "OFF",
-        (ppt->has_nu_scattering == _TRUE_) ? "ON" : "OFF",
-        ppt->delmsq);
-  
+    
+    //NEW: optional numerical total scattering rate F(a,m), evaluated at g=1, read from a
+    // two-column (log_a, ln F) data file. If not given, the fitted rate_fit_coefs polynomial
+    // in perturbations.c is used instead (unchanged legacy behaviour). g is NOT read here --
+    // it continues to be derived at runtime from capY/capX/delmsq, same as before; this file
+    // only supplies the a-dependent SHAPE of the rate at fixed m and g=1.
+    // File selection, in order of priority:
+    //  (1) nu_scattering_rate_file = <full path>   : use exactly this file
+    //  (2) nu_scattering_rate_dir  = <directory>   : file is <dir>/X=<capX>_NumScat.dat,
+    //                                                so only capX has to be specified
+    //  (3) neither                                  : fitted rate_fit_coefs polynomial
+    // The table is only used (and only opened) when nu_scattering is ON; with decay only,
+    // no file is ever touched even if a file/dir is present in the input.
+    ppt->use_scattering_rate_file = _FALSE_;
+    ppt->scattering_rate_file[0] = '\0';
+
+    class_call(parser_read_string(pfc,"nu_scattering_rate_file",&string1,&flag1,errmsg),
+               errmsg,
+               errmsg);
+    if (flag1 == _TRUE_){
+      if (ppt->has_nu_scattering == _TRUE_) {
+        ppt->use_scattering_rate_file = _TRUE_;
+        class_test(strlen(string1) > _FILENAMESIZE_-1,
+                   errmsg,
+                   "nu_scattering_rate_file name is too long, increase _FILENAMESIZE_ in common.h");
+        strcpy(ppt->scattering_rate_file, string1);
+      }
+    }
+    else {
+      class_call(parser_read_string(pfc,"nu_scattering_rate_dir",&string1,&flag2,errmsg),
+                 errmsg,
+                 errmsg);
+      if ((flag2 == _TRUE_) && (ppt->has_nu_scattering == _TRUE_)) {
+        class_test(fabs(ppt->capX - floor(ppt->capX + 0.5)) > 1.e-6,
+                   errmsg,
+                   "nu_scattering_rate_dir needs an integer capX to build the file name X=<capX>_NumScat.dat, but capX = %g. Give nu_scattering_rate_file explicitly instead.",
+                   ppt->capX);
+        class_test(strlen(string1) + 40 > _FILENAMESIZE_-1,
+                   errmsg,
+                   "nu_scattering_rate_dir is too long, increase _FILENAMESIZE_ in common.h");
+        ppt->use_scattering_rate_file = _TRUE_;
+        /* avoid a double slash if the directory already ends with one */
+        if ((strlen(string1) > 0) && (string1[strlen(string1)-1] == '/'))
+          string1[strlen(string1)-1] = '\0';
+        sprintf(ppt->scattering_rate_file, "%s/X=%d_NumScat.dat", string1, (int)floor(ppt->capX + 0.5));
+      }
+    }
+
+    // (verbose notes left commented out on purpose)
+    // printf("-> Neutrino decay channel: %s | scattering channel: %s | delmsq = %g eV^2\n",
+    //        (ppt->has_nu_decay == _TRUE_) ? "ON" : "OFF",
+    //        (ppt->has_nu_scattering == _TRUE_) ? "ON" : "OFF",
+    //        ppt->delmsq);
+    // if (ppt->has_nu_scattering == _TRUE_)
+    //   printf("-> Scattering rate source: %s\n",
+    //          (ppt->use_scattering_rate_file == _TRUE_) ? ppt->scattering_rate_file : "fitted rate_fit_coefs polynomial");
+
   /** 4) Omega_0_cdm (CDM) */
   /* Read */
   class_call(parser_read_double(pfc,"Omega_cdm",&param1,&flag1,errmsg),
@@ -5928,6 +5980,23 @@ int input_default_params(struct background *pba,
   /* NEW: Relativistic neutrino decay parameters */
   ppt->capY=0.;
   ppt->capX=0.;
+
+  /* NEW: decay/scattering switches default OFF, delmsq defaults to the solar splitting.
+     input_read_parameters_species() below will turn a switch back ON automatically if
+     the user sets capY/capX without explicitly setting nu_decay/nu_scattering, so that
+     old .ini files (which only set capX/capY) keep working unchanged. */
+  ppt->has_nu_decay = _FALSE_;
+  ppt->has_nu_scattering = _FALSE_;
+  ppt->delmsq = 7.5e-5; /* eV^2, solar mass splitting */
+
+  /* NEW: numerical total scattering rate file, default OFF (falls back to the fitted
+     rate_fit_coefs polynomial in perturbations.c unless a file is explicitly given). */
+  ppt->use_scattering_rate_file = _FALSE_;
+  ppt->scattering_rate_file[0] = '\0';
+  ppt->rt_size = 0;
+  ppt->rt_log_a = NULL;
+  ppt->rt_lnF = NULL;
+  ppt->ddrt_lnF = NULL;
 
   /** 4) CDM density */
   pba->Omega0_cdm = 0.1201075/pow(pba->h,2);
